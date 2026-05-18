@@ -1,0 +1,4 @@
+---
+frr_asn: 65000
+frr_router_id: "{{ ansible_host }}"
+frr_version: "10.3"

@@ -1,0 +1,6 @@
+---
+- name: Configure underlay VXLAN with FRR BGP EVPN
+  hosts: vxlan
+  become: true
+  roles:
+    - underlay-frr

@@ -1,0 +1,26 @@
+frr version {{ frr_version }}
+frr defaults traditional
+hostname {{ inventory_hostname }}
+!
+router bgp {{ frr_asn }}
+ bgp router-id {{ frr_router_id }}
+ no bgp default ipv4-unicast
+ !
+ neighbor VTEP peer-group
+ neighbor VTEP remote-as {{ frr_asn }}
+ neighbor VTEP update-source {{ frr_router_id }}
+ !
+{% for host in groups['vxlan'] %}
+{% if hostvars[host]['ansible_host'] != frr_router_id %}
+ neighbor {{ hostvars[host]['ansible_host'] }} peer-group VTEP
+{% endif %}
+{% endfor %}
+ !
+ address-family l2vpn evpn
+  neighbor VTEP activate
+  advertise-all-vni
+ exit-address-family
+exit
+!
+line vty
+!

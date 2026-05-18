@@ -1,0 +1,78 @@
+---
+- name: Unlock immutable system files (ZOS workaround)
+  shell: chattr -i /etc/passwd /etc/shadow /etc/gshadow /etc/group /etc/subuid /etc/subgid 2>/dev/null; true
+  changed_when: false
+  when: ansible_distribution_version == 'zos'
+
+- name: Install FRR packages (Debian/Ubuntu)
+  apt:
+    name:
+      - frr
+      - frr-pythontools
+    state: present
+    update_cache: false
+  when: ansible_os_family == 'Debian'
+
+- name: Install FRR packages (RedHat/Fedora)
+  dnf:
+    name:
+      - frr
+    state: present
+  when: ansible_os_family == 'RedHat'
+
+- name: Deploy FRR daemons config
+  template:
+    src: daemons.j2
+    dest: /etc/frr/daemons
+    owner: frr
+    group: frr
+    mode: '0640'
+  notify: restart frr
+
+- name: Deploy FRR BGP EVPN config
+  template:
+    src: frr.conf.j2
+    dest: /etc/frr/frr.conf
+    owner: frr
+    group: frr
+    mode: '0640'
+  notify: restart frr
+
+- name: Ensure FRR is enabled and running
+  systemd:
+    name: frr
+    enabled: true
+    state: started
+
+- name: Discover local VXLAN device names
+  shell: ip -br link show type vxlan | awk '{print $1}'
+  register: vxlan_devices
+  changed_when: false
+
+- name: Check VXLAN learning status
+  shell: ip -d link show {{ item }} | grep -q 'nolearning' && echo "already_off" || echo "needs_change"
+  loop: "{{ vxlan_devices.stdout_lines }}"
+  register: learning_check
+  changed_when: false
+
+- name: Disable VXLAN learning (let FRR manage fdb)
+  shell: ip link set {{ item.item }} type vxlan nolearning
+  loop: "{{ learning_check.results }}"
+  when: item.stdout == 'needs_change'
+  changed_when: true
+
+- name: Remove legacy static fdb entries
+  shell: |
+    for dev in $(ip -br link show type vxlan | awk '{print $1}'); do
+      bridge fdb show dev $dev | grep '00:00:00:00:00:00.*permanent' | while read line; do
+        dst=$(echo "$line" | grep -oP 'dst \K[0-9.]+')
+        if [ -n "$dst" ]; then
+          bridge fdb del 00:00:00:00:00:00 dev $dev dst $dst 2>/dev/null && echo "Removed $dev -> $dst"
+        fi
+      done
+    done
+  register: fdb_cleanup
+  changed_when: fdb_cleanup.stdout | length > 0
+  tags:
+    - never
+    - remove_static_fdb
