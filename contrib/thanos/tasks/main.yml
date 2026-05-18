@@ -136,3 +136,20 @@
     src: datasources.yaml.j2
     dest: /etc/kolla/config/grafana/provisioning/datasources/thanos.yaml
     mode: '0644'
+
+- name: Sync Grafana dashboards from source
+  copy:
+    src: "{{ item }}"
+    dest: /etc/kolla/grafana/dashboards/
+    mode: '0644'
+  with_fileglob:
+    - /opt/grafana-dashboards/*.json
+  when: grafana_dashboards_path is defined
+  notify: restart grafana container
+
+- name: Restart Grafana to load new dashboards
+  shell: podman restart grafana
+  changed_when: false
+  tags:
+    - never
+    - sync_dashboards
