@@ -1,0 +1,22 @@
+---
+- name: restart thanos-sidecar
+  systemd:
+    name: thanos-sidecar
+    state: restarted
+
+- name: restart thanos-query
+  systemd:
+    name: thanos-query
+    state: restarted
+
+- name: reload systemd
+  systemd:
+    daemon_reload: true
+
+- name: reconfigure haproxy
+  debug:
+    msg: "Run: kolla-ansible reconfigure --tags haproxy -i /etc/kolla/multinode"
+
+- name: reconfigure grafana
+  debug:
+    msg: "Run: kolla-ansible reconfigure --tags grafana -i /etc/kolla/multinode"

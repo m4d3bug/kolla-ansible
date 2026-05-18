@@ -1,0 +1,14 @@
+[Unit]
+Description=Thanos Sidecar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+ExecStart=/usr/bin/podman start -a thanos-sidecar
+ExecStop=/usr/bin/podman stop thanos-sidecar
+
+[Install]
+WantedBy=multi-user.target

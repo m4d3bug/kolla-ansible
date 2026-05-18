@@ -1,0 +1,138 @@
+---
+- name: Create Thanos config directory
+  file:
+    path: /etc/kolla/thanos-sidecar
+    state: directory
+    mode: '0755'
+
+- name: Deploy Thanos HTTP client config (Prometheus auth)
+  template:
+    src: http_client.yaml.j2
+    dest: /etc/kolla/thanos-sidecar/http_client.yaml
+    mode: "0644"
+  notify: restart thanos-sidecar
+
+- name: Check if Thanos sidecar needs recreation
+  shell: |
+    if podman container exists thanos-sidecar; then
+      policy=$(podman inspect thanos-sidecar --format '{{ '{{' }}.HostConfig.RestartPolicy.Name{{ '}}' }}')
+      if [ "$policy" != "no" ] && [ "$policy" != "" ]; then
+        echo "needs_recreate"
+      else
+        echo "ok"
+      fi
+    else
+      echo "missing"
+    fi
+  register: sidecar_state
+  changed_when: false
+
+- name: Stop and remove old Thanos sidecar (has restart policy)
+  shell: podman stop thanos-sidecar 2>/dev/null; podman rm -f thanos-sidecar 2>/dev/null; true
+  when: sidecar_state.stdout in ['needs_recreate', 'missing']
+  changed_when: sidecar_state.stdout == 'needs_recreate'
+
+- name: Create Thanos sidecar container (systemd-managed, no restart policy)
+  shell: |
+    podman create \
+      --name thanos-sidecar \
+      --network host \
+      -v /var/lib/containers/storage/volumes/prometheus_server/_data:/var/lib/prometheus:ro \
+      -v /etc/kolla/thanos-sidecar/http_client.yaml:/etc/thanos/http_client.yaml:ro \
+      quay.io/thanos/thanos:{{ thanos_version }} \
+      sidecar \
+      --prometheus.url=http://{{ hostvars[inventory_hostname]['vxlan_ip'] | default(ansible_host) }}:9091 \
+      --prometheus.http-client-file=/etc/thanos/http_client.yaml \
+      --grpc-address=0.0.0.0:10902 \
+      --http-address=0.0.0.0:10901 \
+      --log.level=info \
+      --log.format=logfmt
+  when: sidecar_state.stdout in ['needs_recreate', 'missing']
+
+- name: Check if Thanos query needs recreation
+  shell: |
+    if podman container exists thanos-query; then
+      policy=$(podman inspect thanos-query --format '{{ '{{' }}.HostConfig.RestartPolicy.Name{{ '}}' }}')
+      if [ "$policy" != "no" ] && [ "$policy" != "" ]; then
+        echo "needs_recreate"
+      else
+        echo "ok"
+      fi
+    else
+      echo "missing"
+    fi
+  register: query_state
+  changed_when: false
+
+- name: Stop and remove old Thanos query (has restart policy)
+  shell: podman stop thanos-query 2>/dev/null; podman rm -f thanos-query 2>/dev/null; true
+  when: query_state.stdout in ['needs_recreate', 'missing']
+  changed_when: query_state.stdout == 'needs_recreate'
+
+- name: Create Thanos query container (systemd-managed, no restart policy)
+  shell: |
+    podman create \
+      --name thanos-query \
+      --network host \
+      quay.io/thanos/thanos:{{ thanos_version }} \
+      query \
+      --http-address=0.0.0.0:10903 \
+      --grpc-address=0.0.0.0:10904 \
+      {% for host in groups['monitoring'] %}
+      --store={{ hostvars[host]['vxlan_ip'] | default(hostvars[host]['ansible_host']) }}:10902 \
+      {% endfor %}
+      --query.replica-label=rack \
+      --query.auto-downsampling \
+      --log.level=info \
+      --log.format=logfmt
+  when: query_state.stdout in ['needs_recreate', 'missing']
+
+- name: Deploy Thanos sidecar systemd unit
+  template:
+    src: thanos-sidecar.service.j2
+    dest: /etc/systemd/system/thanos-sidecar.service
+    mode: '0644'
+  notify:
+    - reload systemd
+    - restart thanos-sidecar
+
+- name: Deploy Thanos query systemd unit
+  template:
+    src: thanos-query.service.j2
+    dest: /etc/systemd/system/thanos-query.service
+    mode: '0644'
+  notify:
+    - reload systemd
+    - restart thanos-query
+
+- name: Reload systemd daemon
+  systemd:
+    daemon_reload: true
+
+- name: Enable and start Thanos sidecar
+  systemd:
+    name: thanos-sidecar
+    enabled: true
+    state: started
+
+- name: Enable and start Thanos query
+  systemd:
+    name: thanos-query
+    enabled: true
+    state: started
+
+
+- name: Create Grafana provisioning directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+  loop:
+    - /etc/kolla/config/grafana/provisioning/dashboards
+    - /etc/kolla/config/grafana/provisioning/datasources
+
+- name: Deploy Grafana datasource config
+  template:
+    src: datasources.yaml.j2
+    dest: /etc/kolla/config/grafana/provisioning/datasources/thanos.yaml
+    mode: '0644'

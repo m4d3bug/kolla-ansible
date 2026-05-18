@@ -1,0 +1,22 @@
+apiVersion: 1
+datasources:
+  - name: Thanos-Query
+    type: prometheus
+    access: proxy
+    url: http://{{ kolla_internal_vip }}:10903
+    isDefault: true
+    editable: true
+    jsonData:
+      timeInterval: "60s"
+  - name: Prometheus-VIP
+    type: prometheus
+    access: proxy
+    url: http://{{ kolla_internal_vip }}:9091
+    isDefault: false
+    editable: true
+    basicAuth: true
+    basicAuthUser: "{{ prometheus_basic_auth_user }}"
+    secureJsonData:
+      basicAuthPassword: "{{ prometheus_basic_auth_password }}"
+    jsonData:
+      timeInterval: "15s"

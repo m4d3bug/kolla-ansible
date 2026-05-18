@@ -1,0 +1,7 @@
+---
+thanos_version: "v0.37.0"
+prometheus_basic_auth_user: "admin"
+prometheus_basic_auth_password: "qys6PZeMIpyr4SiFRqHpeLPbfPYBFEsZG69UajTq"
+grafana_admin_user: "admin"
+grafana_admin_password: "EFiGmf0dThCnMWQjjKJ9FBmiUGE6HU8YFQ7NlC2M"
+kolla_internal_vip: "192.168.24.90"

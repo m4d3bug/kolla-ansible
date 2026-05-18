@@ -1,0 +1,14 @@
+[Unit]
+Description=Thanos Query
+After=network-online.target thanos-sidecar.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+ExecStart=/usr/bin/podman start -a thanos-query
+ExecStop=/usr/bin/podman stop thanos-query
+
+[Install]
+WantedBy=multi-user.target
