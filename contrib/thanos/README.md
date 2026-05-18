@@ -94,6 +94,83 @@ curl -u admin:<password> http://192.168.99.90:3000/api/datasources
 
 18 dashboards loaded via Kolla provisioning path.
 
+## Kolla-ansible Operations
+
+Common kolla-ansible commands for Prometheus, Grafana, and Thanos lifecycle management.
+
+### Initial Deployment
+
+```bash
+source /opt/kolla-venv/bin/activate
+
+# Deploy Prometheus + Grafana (first time)
+kolla-ansible deploy --tags prometheus,grafana -i /etc/kolla/multinode
+
+# Then deploy Thanos via infra.yml
+ANSIBLE_ROLES_PATH=/etc/kolla/roles ansible-playbook -i /etc/kolla/multinode /etc/kolla/playbooks/infra.yml --limit monitoring
+
+# Load Grafana datasource provisioning
+kolla-ansible reconfigure --tags grafana -i /etc/kolla/multinode
+```
+
+### Configuration Changes
+
+```bash
+# After modifying globals.yml or /etc/kolla/config/prometheus/ or /etc/kolla/config/grafana/
+kolla-ansible reconfigure --tags prometheus -i /etc/kolla/multinode
+kolla-ansible reconfigure --tags grafana -i /etc/kolla/multinode
+
+# Reconfigure both at once
+kolla-ansible reconfigure --tags prometheus,grafana -i /etc/kolla/multinode
+
+# After updating Thanos role (version bump, config change)
+ANSIBLE_ROLES_PATH=/etc/kolla/roles ansible-playbook -i /etc/kolla/multinode /etc/kolla/playbooks/infra.yml --limit monitoring
+```
+
+### Troubleshooting
+
+```bash
+# Check container status on a specific node
+ssh root@192.168.99.31 "podman ps | grep -E 'prometheus|grafana|thanos'"
+
+# Restart a single Kolla service
+ssh root@192.168.99.31 "podman restart prometheus_server"
+ssh root@192.168.99.31 "podman restart grafana"
+
+# Restart Thanos (systemd-managed, not Kolla)
+ssh root@192.168.99.31 "systemctl restart thanos-sidecar thanos-query"
+
+# View Prometheus scrape targets
+curl -u admin:$(grep prometheus_basic_auth /etc/kolla/passwords.yml | awk '{print $2}') \
+  http://192.168.24.90:9091/api/v1/targets | python3 -m json.tool | grep health
+
+# Check Grafana provisioned datasources
+curl -u admin:<password> http://192.168.99.90:3000/api/datasources | python3 -m json.tool
+```
+
+### Upgrade
+
+```bash
+# Upgrade Kolla OpenStack (includes Prometheus + Grafana)
+kolla-ansible upgrade -i /etc/kolla/multinode
+
+# Upgrade Thanos version: edit contrib/thanos/defaults/main.yml (thanos_version)
+# Then recreate containers:
+ANSIBLE_ROLES_PATH=/etc/kolla/roles ansible-playbook -i /etc/kolla/multinode /etc/kolla/playbooks/infra.yml --limit monitoring --tags recreate
+```
+
+### Backup / Restore
+
+```bash
+# Prometheus data lives in podman volume
+podman volume inspect prometheus_server
+
+# Grafana state (annotations, user prefs) — dashboards are in git, no backup needed
+podman exec grafana grafana-cli admin data-migration export --directory /tmp/grafana-backup/
+
+# Thanos is stateless (reads Prometheus TSDB) — no backup needed
+```
+
 ## Known Issues
 
 - Thanos container runs as non-root; `http_client.yaml` must be mode 0644 (not 0600)
