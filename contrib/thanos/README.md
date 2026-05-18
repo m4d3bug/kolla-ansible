@@ -21,6 +21,18 @@ No HAProxy proxy needed — Thanos Query binds `0.0.0.0:10903` on all monitoring
 - Kolla-ansible deployed with `enable_prometheus: yes` and `enable_grafana: yes`
 - Thanos container image: `quay.io/thanos/thanos:v0.37.0`
 - Monitoring nodes in `[monitoring]` group with `vxlan_ip` variable set
+- Grafana elasticsearch plugin (install via `podman exec grafana grafana-cli plugins install elasticsearch` on each monitoring node)
+
+## Dashboard Format
+
+Dashboards in `/etc/kolla/grafana/dashboards/` must be in **provisioning format** (direct JSON object with `"title"` at top level), NOT API export format (`{"dashboard":{...}, "overwrite":true}`). If dashboards show "Dashboard title cannot be empty", unwrap them:
+
+```python
+import json
+d = json.load(open("dashboard.json"))
+if "dashboard" in d:
+    json.dump(d["dashboard"], open("dashboard.json", "w"), indent=2)
+```
 
 ## Inventory
 
