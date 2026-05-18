@@ -44,19 +44,25 @@
     enabled: true
     state: started
 
-- name: Discover local VXLAN device names
-  shell: ip -br link show type vxlan | awk '{print $1}'
-  register: vxlan_devices
+- name: Discover FRR-managed VXLAN devices (exclude VNI 1000 used by OVN)
+  shell: |
+    for dev in $(ip -br link show type vxlan | awk '{print $1}'); do
+      vni=$(ip -d link show $dev | grep -oP 'vxlan id \K[0-9]+')
+      if [ "$vni" != "1000" ]; then
+        echo "$dev"
+      fi
+    done
+  register: frr_managed_vxlan_devices
   changed_when: false
 
-- name: Check VXLAN learning status
-  shell: ip -d link show {{ item }} | grep -q 'nolearning' && echo "already_off" || echo "needs_change"
-  loop: "{{ vxlan_devices.stdout_lines }}"
+- name: Check VXLAN learning status (FRR-managed only)
+  shell: "ip -d link show {{ item }} | grep -q 'nolearning' && echo already_off || echo needs_change"
+  loop: "{{ frr_managed_vxlan_devices.stdout_lines }}"
   register: learning_check
   changed_when: false
 
-- name: Disable VXLAN learning (let FRR manage fdb)
-  shell: ip link set {{ item.item }} type vxlan nolearning
+- name: Disable VXLAN learning on FRR-managed VXLANs only
+  shell: "ip link set {{ item.item }} type vxlan nolearning"
   loop: "{{ learning_check.results }}"
   when: item.stdout == 'needs_change'
   changed_when: true
