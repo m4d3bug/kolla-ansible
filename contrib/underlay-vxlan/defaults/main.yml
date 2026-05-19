@@ -1,0 +1,19 @@
+---
+# VXLAN overlay network definitions
+# Each entry declares a bridge + VXLAN device pair
+vxlan_networks:
+  - bridge: vxbr0
+    vni: 999
+    dstport: 4789
+    mtu: 1450
+  - bridge: vxbr1
+    vni: 1000
+    dstport: 4789
+    mtu: 1450
+  - bridge: vxbr2
+    vni: 1001
+    dstport: 4789
+    mtu: 1450
+
+# VTEP source IP (underlay address used for VXLAN encapsulation)
+vtep_local_ip: "{{ ansible_host }}"

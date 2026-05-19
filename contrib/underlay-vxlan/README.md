@@ -1,16 +1,61 @@
-# Underlay VXLAN Static FDB Management
+# Underlay VXLAN Declarative Management
 
-Manages static bridge fdb entries for VXLAN overlay networks using Ansible. Adding a new node requires only updating the inventory and running the playbook — all nodes get updated automatically.
+Idempotent, declarative management of VXLAN overlay networks. Handles the full lifecycle: bridge creation, VXLAN device creation, IP assignment, and static fdb entries.
 
-## How It Works
+## What It Manages
 
 ```
-inventory [vxlan] group defines all VTEP peers
-  → Ansible generates fdb entries for each node (excluding self)
-  → bridge fdb append 00:00:00:00:00:00 dev <vxlan_dev> dst <peer_ip> self permanent
+Phase 1: Bridges       — create if missing, ensure UP
+Phase 2: VXLAN devices — create if missing, bind to bridge
+Phase 3: Binding       — verify VXLAN is enslaved to correct bridge
+Phase 4: MTU           — set bridge MTU to declared value
+Phase 5: IP addresses  — add declared IPs if missing (from host_vars)
+Phase 6: Static fdb    — ensure all peers have flood entries
 ```
 
-No additional daemons, no runtime dependencies. Pure static configuration managed by Ansible.
+All phases are idempotent — running the playbook multiple times produces no changes if state is already correct.
+
+## Configuration
+
+### defaults/main.yml (network topology)
+
+```yaml
+vxlan_networks:
+  - bridge: vxbr0
+    vni: 999
+    dstport: 4789
+    mtu: 1450
+  - bridge: vxbr1
+    vni: 1000
+    dstport: 4789
+    mtu: 1450
+  - bridge: vxbr2
+    vni: 1001
+    dstport: 4789
+    mtu: 1450
+
+vtep_local_ip: "{{ ansible_host }}"
+```
+
+### host_vars (per-node IP addresses)
+
+Define `vxlan_host_bridges` in host_vars or inventory to assign IPs:
+
+```yaml
+# host_vars/rack01.yml
+vxlan_host_bridges:
+  - bridge: vxbr0
+    addresses:
+      - "192.168.24.31/24"
+  - bridge: vxbr1
+    addresses:
+      - "10.0.0.31/16"
+  - bridge: vxbr2
+    addresses:
+      - "10.9.6.31/24"
+```
+
+If `vxlan_host_bridges` is not defined for a host, Phase 5 (IP assignment) is skipped — useful for nodes where IPs are managed by NetworkManager or another tool.
 
 ## Inventory
 
@@ -33,21 +78,25 @@ ansible_ssh_common_args=-o StrictHostKeyChecking=no -o PubkeyAuthentication=no
 ```bash
 source /opt/kolla-venv/bin/activate
 
-# Apply static fdb to all VXLAN nodes
+# Full declarative apply (creates missing infra + ensures fdb)
 ANSIBLE_ROLES_PATH=/etc/kolla/roles ansible-playbook -i /etc/kolla/multinode /etc/kolla/playbooks/infra.yml
 
-# Target a single node
-ANSIBLE_ROLES_PATH=/etc/kolla/roles ansible-playbook -i /etc/kolla/multinode /etc/kolla/playbooks/infra.yml --limit rack05
+# Initialize a brand new node
+ANSIBLE_ROLES_PATH=/etc/kolla/roles ansible-playbook -i /etc/kolla/multinode /etc/kolla/playbooks/infra.yml --limit new-rack
+
+# Check mode (dry run)
+ANSIBLE_ROLES_PATH=/etc/kolla/roles ansible-playbook -i /etc/kolla/multinode /etc/kolla/playbooks/infra.yml --check
 ```
 
 ## Adding a New Node
 
-1. Add the node to `[vxlan]` group in `/etc/kolla/multinode`
-2. Run the playbook (all nodes get the new peer's fdb entry)
+1. Add to `[vxlan]` group in inventory
+2. Optionally define `vxlan_host_bridges` in host_vars for IP assignment
+3. Run playbook — all nodes get the new peer's fdb entry, new node gets full initialization
 
 ## Design Decisions
 
-- **No nolearning**: VXLAN interfaces keep default `learning` mode. This is safe for OVN provider bridges (VNI 1000) which rely on data-plane MAC learning.
-- **No FRR/BGP**: Static fdb is sufficient for a fixed-topology homelab (6 nodes). BGP EVPN adds complexity and risk (broke OVN metadata when nolearning was set on VNI 1000) without meaningful benefit at this scale.
-- **Idempotent**: Only adds missing entries, does not touch existing ones.
-- **fdb append vs replace**: Uses `append` so multiple peers can coexist on the same device. Checks for existing entries before adding to avoid duplicates.
+- **No nolearning**: All VXLAN interfaces keep `learning` mode. OVN provider bridges (VNI 1000) require data-plane MAC learning.
+- **Handles naming differences**: Discovers existing VXLAN devices by VNI, not by name (supports both `vxlan999` and `vx999br0` naming).
+- **IP assignment is optional**: Only runs if `vxlan_host_bridges` is defined for the host. Existing nodes managed by NetworkManager are unaffected.
+- **fdb append, not replace**: Uses `append` with existence check to avoid duplicates while being safe on older iproute2 versions.

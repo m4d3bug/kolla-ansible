@@ -1,20 +1,114 @@
 ---
-- name: Discover local VXLAN devices
-  shell: ip -br link show type vxlan | awk '{print $1}'
-  register: vxlan_devices
+# Declarative, idempotent VXLAN overlay management
+# Manages: bridges, VXLAN devices, IP addresses, static fdb entries
+
+# --- Phase 1: Ensure bridges exist ---
+- name: Check if bridges exist
+  shell: "ip link show {{ item.bridge }} > /dev/null 2>&1 && echo exists || echo missing"
+  loop: "{{ vxlan_networks }}"
+  register: bridge_check
   changed_when: false
 
-- name: Get local VTEP IP
-  shell: "ip -d link show {{ vxlan_devices.stdout_lines[0] }} | grep -oP 'local \\K[0-9.]+'"
-  register: local_vtep_ip
+- name: Create missing bridges
+  shell: |
+    ip link add {{ item.item.bridge }} type bridge stp_state 0
+    ip link set {{ item.item.bridge }} up
+  loop: "{{ bridge_check.results }}"
+  when: item.stdout == 'missing'
+
+# --- Phase 2: Ensure VXLAN devices exist ---
+- name: Check if VXLAN devices exist
+  shell: |
+    # Find existing VXLAN device for this VNI (handles different naming conventions)
+    for dev in $(ip -br link show type vxlan | awk '{print $1}'); do
+      vni=$(ip -d link show $dev | grep -oP 'vxlan id \K[0-9]+')
+      if [ "$vni" = "{{ item.vni }}" ]; then
+        echo "$dev"
+        exit 0
+      fi
+    done
+    echo "MISSING"
+  loop: "{{ vxlan_networks }}"
+  register: vxlan_dev_check
+  changed_when: false
+
+- name: Create missing VXLAN devices
+  shell: |
+    ip link add vxlan{{ item.item.vni }} type vxlan \
+      id {{ item.item.vni }} \
+      local {{ vtep_local_ip }} \
+      dstport {{ item.item.dstport }} \
+      nolearning
+    ip link set vxlan{{ item.item.vni }} master {{ item.item.bridge }}
+    ip link set vxlan{{ item.item.vni }} up
+  loop: "{{ vxlan_dev_check.results }}"
+  when: item.stdout == 'MISSING'
+
+# --- Phase 3: Ensure VXLAN is enslaved to correct bridge ---
+- name: Verify VXLAN-to-bridge binding
+  shell: |
+    dev="{{ item.stdout }}"
+    if [ "$dev" = "MISSING" ]; then exit 0; fi
+    master=$(ip -d link show $dev | grep -oP 'master \K\S+')
+    if [ "$master" = "{{ item.item.bridge }}" ]; then
+      echo "ok"
+    else
+      echo "needs_fix"
+    fi
+  loop: "{{ vxlan_dev_check.results }}"
+  register: binding_check
+  changed_when: false
+
+- name: Fix VXLAN-to-bridge binding
+  shell: |
+    dev="{{ item.item.stdout }}"
+    ip link set $dev nomaster
+    ip link set $dev master {{ item.item.item.bridge }}
+  loop: "{{ binding_check.results }}"
+  when: item.stdout == 'needs_fix'
+
+# --- Phase 4: Ensure MTU is correct ---
+- name: Set bridge MTU
+  shell: |
+    current_mtu=$(ip -d link show {{ item.bridge }} | grep -oP 'mtu \K[0-9]+')
+    if [ "$current_mtu" != "{{ item.mtu }}" ]; then
+      ip link set {{ item.bridge }} mtu {{ item.mtu }}
+      echo "changed"
+    else
+      echo "ok"
+    fi
+  loop: "{{ vxlan_networks }}"
+  register: mtu_result
+  changed_when: "'changed' in mtu_result.stdout"
+
+# --- Phase 5: Ensure IP addresses (from host_vars) ---
+- name: Configure bridge IP addresses
+  shell: |
+    {% for addr in item.addresses | default([]) %}
+    if ! ip addr show {{ item.bridge }} | grep -q "{{ addr }}"; then
+      ip addr add {{ addr }} dev {{ item.bridge }}
+      echo "added {{ addr }}"
+    fi
+    {% endfor %}
+  loop: "{{ vxlan_host_bridges | default([]) }}"
+  register: ip_result
+  changed_when: "'added' in ip_result.stdout"
+
+# --- Phase 6: Ensure static fdb entries for all peers ---
+- name: Get actual VXLAN device names
+  shell: |
+    for dev in $(ip -br link show type vxlan | awk '{print $1}'); do
+      echo $dev
+    done
+  register: actual_vxlan_devices
   changed_when: false
 
 - name: Ensure static fdb entries for all VXLAN peers
   shell: |
-    {% for host in groups['vxlan'] if hostvars[host]['ansible_host'] != local_vtep_ip.stdout %}
+    {% for host in groups['vxlan'] if hostvars[host]['ansible_host'] != vtep_local_ip %}
     bridge fdb show dev {{ item }} | grep -q "dst {{ hostvars[host]['ansible_host'] }}.*permanent" || \
       bridge fdb append 00:00:00:00:00:00 dev {{ item }} dst {{ hostvars[host]['ansible_host'] }} self permanent
     {% endfor %}
-  loop: "{{ vxlan_devices.stdout_lines }}"
+  loop: "{{ actual_vxlan_devices.stdout_lines }}"
   register: fdb_result
   changed_when: fdb_result.rc == 0
