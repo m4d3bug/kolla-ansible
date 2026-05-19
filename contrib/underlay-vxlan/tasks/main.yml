@@ -70,7 +70,7 @@
 # --- Phase 4: Ensure MTU is correct ---
 - name: Set bridge MTU
   shell: |
-    current_mtu=$(ip -d link show {{ item.bridge }} | grep -oP 'mtu \K[0-9]+')
+    current_mtu=$(cat /sys/class/net/{{ item.bridge }}/mtu)
     if [ "$current_mtu" != "{{ item.mtu }}" ]; then
       ip link set {{ item.bridge }} mtu {{ item.mtu }}
       echo "changed"
@@ -105,10 +105,14 @@
 
 - name: Ensure static fdb entries for all VXLAN peers
   shell: |
+    changed=false
     {% for host in groups['vxlan'] if hostvars[host]['ansible_host'] != vtep_local_ip %}
-    bridge fdb show dev {{ item }} | grep -q "dst {{ hostvars[host]['ansible_host'] }}.*permanent" || \
+    if ! bridge fdb show dev {{ item }} | grep -q "dst {{ hostvars[host]['ansible_host'] }}.*permanent"; then
       bridge fdb append 00:00:00:00:00:00 dev {{ item }} dst {{ hostvars[host]['ansible_host'] }} self permanent
+      changed=true
+    fi
     {% endfor %}
+    echo $changed
   loop: "{{ actual_vxlan_devices.stdout_lines }}"
   register: fdb_result
-  changed_when: fdb_result.rc == 0
+  changed_when: "'true' in fdb_result.stdout"
