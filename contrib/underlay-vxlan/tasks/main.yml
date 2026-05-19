@@ -1,0 +1,20 @@
+---
+- name: Discover local VXLAN devices
+  shell: ip -br link show type vxlan | awk '{print $1}'
+  register: vxlan_devices
+  changed_when: false
+
+- name: Get local VTEP IP
+  shell: "ip -d link show {{ vxlan_devices.stdout_lines[0] }} | grep -oP 'local \\K[0-9.]+'"
+  register: local_vtep_ip
+  changed_when: false
+
+- name: Ensure static fdb entries for all VXLAN peers
+  shell: |
+    {% for host in groups['vxlan'] if hostvars[host]['ansible_host'] != local_vtep_ip.stdout %}
+    bridge fdb show dev {{ item }} | grep -q "dst {{ hostvars[host]['ansible_host'] }}.*permanent" || \
+      bridge fdb append 00:00:00:00:00:00 dev {{ item }} dst {{ hostvars[host]['ansible_host'] }} self permanent
+    {% endfor %}
+  loop: "{{ vxlan_devices.stdout_lines }}"
+  register: fdb_result
+  changed_when: fdb_result.rc == 0

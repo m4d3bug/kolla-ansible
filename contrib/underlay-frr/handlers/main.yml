@@ -1,9 +1,0 @@
----
-- name: restart frr
-  systemd:
-    name: frr
-    state: restarted
-
-- name: reload frr
-  command: vtysh -c "write memory"
-  changed_when: true

@@ -1,0 +1,85 @@
+---
+# Rollback FRR BGP EVPN to static fdb management
+# SAFE ORDER: restore static fdb FIRST, then stop FRR
+# This ensures zero traffic interruption on VNI 999 (Galera/RabbitMQ)
+
+- name: Rollback FRR to static fdb
+  hosts: vxlan
+  become: true
+  tasks:
+    - name: Discover local VXLAN devices
+      shell: ip -br link show type vxlan | awk '{print $1}'
+      register: vxlan_devices
+      changed_when: false
+
+    - name: Get local VXLAN IP for fdb exclusion
+      shell: ip -d link show {{ vxlan_devices.stdout_lines[0] }} | grep -oP 'local \K[0-9.]+'
+      register: local_vtep_ip
+      changed_when: false
+
+    - name: Restore static fdb entries for all peers
+      shell: |
+        for dev in {{ vxlan_devices.stdout_lines | join(' ') }}; do
+          {% for host in groups['vxlan'] %}
+          {% if hostvars[host]['ansible_host'] != local_vtep_ip.stdout %}
+          bridge fdb replace 00:00:00:00:00:00 dev $dev dst {{ hostvars[host]['ansible_host'] }} self permanent 2>/dev/null
+          {% endif %}
+          {% endfor %}
+        done
+      changed_when: true
+
+    - name: Verify connectivity after static fdb restore
+      shell: |
+        {% for host in groups['vxlan'] %}
+        {% if hostvars[host]['ansible_host'] != local_vtep_ip.stdout %}
+        ping -c1 -W2 {{ hostvars[host]['ansible_host'] }} || exit 1
+        {% endif %}
+        {% endfor %}
+      changed_when: false
+
+    - name: Re-enable VXLAN learning on all interfaces
+      shell: ip link set {{ item }} type vxlan learning
+      loop: "{{ vxlan_devices.stdout_lines }}"
+      changed_when: true
+
+    - name: Stop and disable FRR
+      systemd:
+        name: frr
+        state: stopped
+        enabled: false
+      ignore_errors: true
+
+    - name: Remove FRR packages (Debian/Ubuntu)
+      apt:
+        name:
+          - frr
+          - frr-pythontools
+        state: absent
+        purge: true
+      when: ansible_os_family == 'Debian'
+      ignore_errors: true
+
+    - name: Remove FRR packages (RedHat/Fedora)
+      dnf:
+        name:
+          - frr
+        state: absent
+      when: ansible_os_family == 'RedHat'
+      ignore_errors: true
+
+    - name: Clean up FRR config
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/frr
+        - /var/log/frr
+
+    - name: Final connectivity check
+      shell: |
+        {% for host in groups['vxlan'] %}
+        {% if hostvars[host]['ansible_host'] != local_vtep_ip.stdout %}
+        ping -c1 -W2 {{ hostvars[host]['ansible_host'] }} || exit 1
+        {% endif %}
+        {% endfor %}
+      changed_when: false

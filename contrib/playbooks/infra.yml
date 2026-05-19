@@ -1,6 +1,12 @@
 ---
-- name: Configure underlay VXLAN with FRR BGP EVPN
+- name: Manage underlay VXLAN static fdb entries
   hosts: vxlan
   become: true
   roles:
-    - underlay-frr
+    - underlay-vxlan
+
+- name: Deploy Thanos monitoring stack
+  hosts: monitoring
+  become: true
+  roles:
+    - thanos
